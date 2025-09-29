@@ -1,0 +1,559 @@
+# Kubernetes Auto-Scaling Configurations for Multi-Tenant AI Platform
+# These configurations enable scaling down to zero during low activity
+
+---
+# Cluster Autoscaler Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cluster-autoscaler
+  namespace: kube-system
+  labels:
+    app: cluster-autoscaler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cluster-autoscaler
+  template:
+    metadata:
+      labels:
+        app: cluster-autoscaler
+    spec:
+      serviceAccountName: cluster-autoscaler
+      containers:
+      - image: k8s.gcr.io/autoscaling/cluster-autoscaler:v1.28.0
+        name: cluster-autoscaler
+        resources:
+          limits:
+            cpu: 100m
+            memory: 300Mi
+          requests:
+            cpu: 100m
+            memory: 300Mi
+        command:
+        - ./cluster-autoscaler
+        - --v=4
+        - --stderrthreshold=info
+        - --cloud-provider=aws
+        - --skip-nodes-with-local-storage=false
+        - --expander=least-waste
+        - --node-group-auto-discovery=asg:tag=k8s.io/cluster-autoscaler/enabled,k8s.io/cluster-autoscaler/eks-cluster
+        - --balance-similar-node-groups
+        - --scale-down-enabled=true
+        - --scale-down-delay-after-add=10m
+        - --scale-down-unneeded-time=10m
+        - --scale-down-utilization-threshold=0.5
+        - --max-node-provision-time=15m
+        - --max-empty-bulk-delete=10
+        - --max-total-unready-percentage=45
+        - --ok-total-unready-count=3
+        - --max-graceful-termination-sec=600
+        env:
+        - name: AWS_REGION
+          value: us-west-2
+        - name: AWS_DEFAULT_REGION
+          value: us-west-2
+
+---
+# Cluster Autoscaler Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cluster-autoscaler
+  namespace: kube-system
+  labels:
+    k8s-addon: cluster-autoscaler.addons.k8s.io
+    k8s-app: cluster-autoscaler
+
+---
+# Cluster Autoscaler ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cluster-autoscaler
+  labels:
+    k8s-addon: cluster-autoscaler.addons.k8s.io
+    k8s-app: cluster-autoscaler
+rules:
+- apiGroups: [""]
+  resources: ["events", "endpoints"]
+  verbs: ["create", "patch"]
+- apiGroups: [""]
+  resources: ["pods/eviction"]
+  verbs: ["create"]
+- apiGroups: [""]
+  resources: ["pods/status"]
+  verbs: ["update"]
+- apiGroups: [""]
+  resources: ["endpoints"]
+  resourceNames: ["cluster-autoscaler"]
+  verbs: ["get", "update"]
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["watch", "list", "get", "update"]
+- apiGroups: [""]
+  resources: ["namespaces", "pods", "services", "replicationcontrollers", "persistentvolumeclaims", "persistentvolumes"]
+  verbs: ["watch", "list", "get"]
+- apiGroups: ["extensions"]
+  resources: ["replicasets", "daemonsets"]
+  verbs: ["watch", "list", "get"]
+- apiGroups: ["policy"]
+  resources: ["poddisruptionbudgets"]
+  verbs: ["watch", "list"]
+- apiGroups: ["apps"]
+  resources: ["statefulsets", "replicasets", "daemonsets"]
+  verbs: ["watch", "list", "get"]
+- apiGroups: ["storage.k8s.io"]
+  resources: ["storageclasses", "csinodes", "csidrivers", "csistoragecapacities"]
+  verbs: ["watch", "list", "get"]
+- apiGroups: ["batch", "extensions"]
+  resources: ["jobs"]
+  verbs: ["get", "list", "watch", "patch"]
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["create"]
+- apiGroups: ["coordination.k8s.io"]
+  resourceNames: ["cluster-autoscaler"]
+  resources: ["leases"]
+  verbs: ["get", "update"]
+
+---
+# Cluster Autoscaler ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cluster-autoscaler
+  labels:
+    k8s-addon: cluster-autoscaler.addons.k8s.io
+    k8s-app: cluster-autoscaler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-autoscaler
+subjects:
+- kind: ServiceAccount
+  name: cluster-autoscaler
+  namespace: kube-system
+
+---
+# Karpenter NodePool for shared workloads
+apiVersion: karpenter.sh/v1beta1
+kind: NodePool
+metadata:
+  name: shared-workloads
+spec:
+  template:
+    metadata:
+      labels:
+        workload-type: "shared"
+        node-type: "karpenter"
+    spec:
+      nodeClassRef:
+        apiVersion: karpenter.k8s.aws/v1beta1
+        kind: EC2NodeClass
+        name: default
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["arm64"]
+        - key: kubernetes.io/os
+          operator: In
+          values: ["linux"]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["spot", "on-demand"]
+        - key: node.kubernetes.io/instance-type
+          operator: In
+          values: ["t4g.medium", "t4g.large", "t4g.xlarge"]
+      taints:
+        - key: karpenter
+          value: "true"
+          effect: NoSchedule
+  limits:
+    cpu: 1000
+    memory: 1000Gi
+  disruption:
+    consolidateAfter: 30s
+    consolidateWhen: Underutilized
+    expireAfter: 2160h # 90 days
+
+---
+# Karpenter NodePool for GPU workloads
+apiVersion: karpenter.sh/v1beta1
+kind: NodePool
+metadata:
+  name: gpu-workloads
+spec:
+  template:
+    metadata:
+      labels:
+        workload-type: "gpu"
+        node-type: "karpenter-gpu"
+    spec:
+      nodeClassRef:
+        apiVersion: karpenter.k8s.aws/v1beta1
+        kind: EC2NodeClass
+        name: gpu
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: kubernetes.io/os
+          operator: In
+          values: ["linux"]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["spot", "on-demand"]
+        - key: node.kubernetes.io/instance-type
+          operator: In
+          values: ["g5.xlarge", "g5.2xlarge", "g5.4xlarge"]
+        - key: nvidia.com/gpu
+          operator: Exists
+      taints:
+        - key: nvidia.com/gpu
+          value: "true"
+          effect: NoSchedule
+  limits:
+    cpu: 1000
+    memory: 1000Gi
+  disruption:
+    consolidateAfter: 30s
+    consolidateWhen: Underutilized
+    expireAfter: 2160h # 90 days
+
+---
+# Karpenter EC2NodeClass for general workloads
+apiVersion: karpenter.k8s.aws/v1beta1
+kind: EC2NodeClass
+metadata:
+  name: default
+spec:
+  amiFamily: AL2
+  instanceStorePolicy: RAID0
+  userData: |
+    #!/bin/bash
+    /etc/eks/bootstrap.sh eks-cluster
+    /opt/aws/bin/cfn-signal -e $? --stack  ${AWS::StackName} --resource AutoScalingGroup --region ${AWS::Region}
+  instanceProfile: KarpenterNodeInstanceProfile
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: eks-cluster
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: eks-cluster
+  tags:
+    karpenter.sh/discovery: eks-cluster
+    workload-type: "shared"
+    node-type: "karpenter"
+
+---
+# Karpenter EC2NodeClass for GPU workloads
+apiVersion: karpenter.k8s.aws/v1beta1
+kind: EC2NodeClass
+metadata:
+  name: gpu
+spec:
+  amiFamily: AL2
+  instanceStorePolicy: RAID0
+  userData: |
+    #!/bin/bash
+    /etc/eks/bootstrap.sh eks-cluster
+    /opt/aws/bin/cfn-signal -e $? --stack  ${AWS::StackName} --resource AutoScalingGroup --region ${AWS::Region}
+  instanceProfile: KarpenterNodeInstanceProfile
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: eks-cluster
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: eks-cluster
+  tags:
+    karpenter.sh/discovery: eks-cluster
+    workload-type: "gpu"
+    node-type: "karpenter-gpu"
+
+---
+# Horizontal Pod Autoscaler for shared services
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: shared-services-hpa
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: shared-services
+  minReplicas: 0  # Can scale to 0
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300  # 5 minutes
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60   # 1 minute
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 60
+
+---
+# Vertical Pod Autoscaler for shared services
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: shared-services-vpa
+  namespace: default
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: shared-services
+  updatePolicy:
+    updateMode: "Auto"
+  resourcePolicy:
+    containerPolicies:
+    - containerName: shared-services
+      minAllowed:
+        cpu: 100m
+        memory: 128Mi
+      maxAllowed:
+        cpu: 1000m
+        memory: 1Gi
+      controlledResources: ["cpu", "memory"]
+
+---
+# Tenant 1 HPA
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: tenant-1-hpa
+  namespace: tenant-1
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: tenant-1-app
+  minReplicas: 0  # Can scale to 0
+  maxReplicas: 5
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300  # 5 minutes
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60   # 1 minute
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 60
+
+---
+# Tenant 2 HPA
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: tenant-2-hpa
+  namespace: tenant-2
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: tenant-2-app
+  minReplicas: 0  # Can scale to 0
+  maxReplicas: 5
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300  # 5 minutes
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60   # 1 minute
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 60
+
+---
+# Custom Metrics HPA for AI workloads
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ai-workloads-hpa
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ai-workloads
+  minReplicas: 0  # Can scale to 0
+  maxReplicas: 20
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  - type: Pods
+    pods:
+      metric:
+        name: ai_requests_per_second
+      target:
+        type: AverageValue
+        averageValue: "10"
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 600  # 10 minutes
+      policies:
+      - type: Percent
+        value: 25
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60   # 1 minute
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 60
+
+---
+# CronJob for scheduled scaling
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: scale-down-scheduler
+  namespace: default
+spec:
+  schedule: "0 2 * * *"  # Run at 2 AM daily
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: scale-down
+            image: bitnami/kubectl:latest
+            command:
+            - /bin/sh
+            - -c
+            - |
+              # Scale down all deployments to 0 replicas during off-hours
+              kubectl scale deployment --all --replicas=0 --namespace=tenant-1
+              kubectl scale deployment --all --replicas=0 --namespace=tenant-2
+              kubectl scale deployment shared-services --replicas=0 --namespace=default
+              echo "Scaled down all deployments at $(date)"
+          restartPolicy: OnFailure
+
+---
+# CronJob for scheduled scaling up
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: scale-up-scheduler
+  namespace: default
+spec:
+  schedule: "0 8 * * *"  # Run at 8 AM daily
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: scale-up
+            image: bitnami/kubectl:latest
+            command:
+            - /bin/sh
+            - -c
+            - |
+              # Scale up shared services to 1 replica
+              kubectl scale deployment shared-services --replicas=1 --namespace=default
+              echo "Scaled up shared services at $(date)"
+          restartPolicy: OnFailure
+
+---
+# Pod Disruption Budget for shared services
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: shared-services-pdb
+  namespace: default
+spec:
+  minAvailable: 0
+  selector:
+    matchLabels:
+      app: shared-services
+
+---
+# Pod Disruption Budget for tenant services
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: tenant-1-pdb
+  namespace: tenant-1
+spec:
+  minAvailable: 0
+  selector:
+    matchLabels:
+      app: tenant-1-app
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: tenant-2-pdb
+  namespace: tenant-2
+spec:
+  minAvailable: 0
+  selector:
+    matchLabels:
+      app: tenant-2-app
