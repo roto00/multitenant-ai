@@ -39,6 +39,11 @@ resource "aws_codebuild_project" "backend_build" {
     git_submodules_config {
       fetch_submodules = true
     }
+
+    auth {
+      type     = "OAUTH"
+      resource = "arn:aws:codeconnections:us-west-2:665832050599:connection/1239f65e-0be9-4293-9b66-f0f8d3dd6ad4"
+    }
   }
 
   source_version = "main"
@@ -106,6 +111,15 @@ resource "aws_iam_role_policy" "codebuild_policy" {
         ]
         Resource = [
           "arn:aws:s3:::codepipeline-${var.aws_region}-*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "codeconnections:UseConnection"
+        ]
+        Resource = [
+          "arn:aws:codeconnections:${var.aws_region}:${data.aws_caller_identity.current.account_id}:connection/*"
         ]
       },
     ]
