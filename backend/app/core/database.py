@@ -22,7 +22,12 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 # Redis setup
-redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+redis_client = redis.from_url(
+    settings.REDIS_URL, 
+    decode_responses=True,
+    ssl_cert_reqs=None,  # Disable SSL certificate verification for ElastiCache
+    ssl_check_hostname=False
+)
 
 async def init_db():
     """Initialize database tables"""
