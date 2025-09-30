@@ -33,7 +33,7 @@ resource "aws_codebuild_project" "backend_build" {
 
   source {
     type            = "GITHUB"
-    location        = "https://github.com/robthomas/mutlitenant-ai.git"
+    location        = "https://github.com/roto00/multitenant-ai.git"
     git_clone_depth = 1
 
     git_submodules_config {
@@ -107,7 +107,7 @@ resource "aws_iam_role_policy" "codebuild_policy" {
         Resource = [
           "arn:aws:s3:::codepipeline-${var.aws_region}-*"
         ]
-      }
+      },
     ]
   })
 }
