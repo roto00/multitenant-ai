@@ -1,0 +1,26 @@
+version: 0.2
+
+phases:
+  pre_build:
+    commands:
+      - echo Logging in to Amazon ECR...
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $ECR_REPOSITORY_URI
+  build:
+    commands:
+      - echo Build started on `date`
+      - echo Building the Docker image...
+      - cd backend
+      - docker build -t $ECR_REPOSITORY_URI:latest .
+      - docker tag $ECR_REPOSITORY_URI:latest $ECR_REPOSITORY_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION
+  post_build:
+    commands:
+      - echo Build completed on `date`
+      - echo Pushing the Docker images...
+      - docker push $ECR_REPOSITORY_URI:latest
+      - docker push $ECR_REPOSITORY_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION
+      - echo Writing image definitions file...
+      - printf '[{"name":"backend","imageUri":"%s"}]' $ECR_REPOSITORY_URI:latest > imagedefinitions.json
+artifacts:
+  files:
+    - imagedefinitions.json
+  name: backend-$(date +%Y-%m-%d)
