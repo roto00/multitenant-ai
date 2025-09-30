@@ -1,0 +1,45 @@
+{
+    "family": "multitenant-ai-minimal-task",
+    "networkMode": "awsvpc",
+    "requiresCompatibilities": ["FARGATE"],
+    "cpu": "1024",
+    "memory": "2048",
+    "executionRoleArn": "arn:aws:iam::665832050599:role/multitenant-ai-minimal-ecs-execution-role",
+    "taskRoleArn": "arn:aws:iam::665832050599:role/multitenant-ai-minimal-ecs-task-role",
+    "containerDefinitions": [
+        {
+            "name": "backend",
+            "image": "665832050599.dkr.ecr.us-west-2.amazonaws.com/multitenant-ai-minimal-backend:latest",
+            "cpu": 0,
+            "portMappings": [
+                {
+                    "containerPort": 8000,
+                    "hostPort": 8000,
+                    "protocol": "tcp"
+                }
+            ],
+            "essential": true,
+            "environment": [
+                {
+                    "name": "DATABASE_URL",
+                    "value": "postgresql://postgres:SecurePassword123!@multitenant-ai-minimal-db.ct8eacuiyx02.us-west-2.rds.amazonaws.com:5432/multitenant_ai"
+                },
+                {
+                    "name": "REDIS_URL",
+                    "value": "rediss://master.multitenant-ai-minimal-redis.sbkyjf.usw2.cache.amazonaws.com:6379"
+                }
+            ],
+            "mountPoints": [],
+            "volumesFrom": [],
+            "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                    "awslogs-group": "/ecs/multitenant-ai-minimal",
+                    "awslogs-region": "us-west-2",
+                    "awslogs-stream-prefix": "ecs"
+                }
+            },
+            "systemControls": []
+        }
+    ]
+}
