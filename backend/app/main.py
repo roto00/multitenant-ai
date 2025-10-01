@@ -38,6 +38,11 @@ async def health_check_simple():
     """Simple health check endpoint for load balancer"""
     return {"status": "ok"}
 
+@app.get("/ping")
+async def ping():
+    """Ultra simple ping endpoint"""
+    return "pong"
+
 # Middleware
 app.add_middleware(
     CORSMiddleware,
