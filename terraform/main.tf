@@ -292,15 +292,17 @@ resource "aws_ecs_task_definition" "main" {
   family                   = "${var.project_name}-task"
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
-  cpu                      = 256
-  memory                   = 512
+  cpu                      = 1024
+  memory                   = 2048
   execution_role_arn       = aws_iam_role.ecs_execution_role.arn
   task_role_arn           = aws_iam_role.ecs_task_role.arn
 
   container_definitions = jsonencode([
     {
       name  = "backend"
-      image = "nginx:alpine"  # Placeholder - will be updated with actual app
+      image = "${aws_ecr_repository.backend.repository_url}:latest"
+      cpu   = 1024
+      memory = 2048
       
       portMappings = [
         {
@@ -317,7 +319,7 @@ resource "aws_ecs_task_definition" "main" {
         },
         {
           name  = "REDIS_URL"
-          value = "redis://${aws_elasticache_replication_group.main.primary_endpoint_address}:6379"
+          value = "rediss://${aws_elasticache_replication_group.main.primary_endpoint_address}:6379"
         }
       ]
 
@@ -483,6 +485,51 @@ resource "aws_ecr_lifecycle_policy" "backend" {
   })
 }
 
+# Route53 Hosted Zone (optional - for custom domain)
+variable "domain_name" {
+  description = "Domain name for the application (optional)"
+  type        = string
+  default     = ""
+}
+
+# Create hosted zone if domain is provided
+resource "aws_route53_zone" "main" {
+  count = var.domain_name != "" ? 1 : 0
+  name  = var.domain_name
+
+  tags = {
+    Name = "${var.project_name}-zone"
+  }
+}
+
+# Route53 A record pointing to ALB
+resource "aws_route53_record" "app" {
+  count   = var.domain_name != "" ? 1 : 0
+  zone_id = aws_route53_zone.main[0].zone_id
+  name    = var.domain_name
+  type    = "A"
+
+  alias {
+    name                   = aws_lb.main.dns_name
+    zone_id                = aws_lb.main.zone_id
+    evaluate_target_health = true
+  }
+}
+
+# Route53 A record for www subdomain
+resource "aws_route53_record" "www" {
+  count   = var.domain_name != "" ? 1 : 0
+  zone_id = aws_route53_zone.main[0].zone_id
+  name    = "www.${var.domain_name}"
+  type    = "A"
+
+  alias {
+    name                   = aws_lb.main.dns_name
+    zone_id                = aws_lb.main.zone_id
+    evaluate_target_health = true
+  }
+}
+
 # Outputs
 output "alb_dns_name" {
   description = "DNS name of the load balancer"
@@ -509,4 +556,19 @@ output "s3_bucket_name" {
 output "ecr_repository_url" {
   description = "URL of the ECR repository"
   value       = aws_ecr_repository.backend.repository_url
+}
+
+output "domain_name" {
+  description = "Domain name for the application"
+  value       = var.domain_name != "" ? var.domain_name : "Not configured"
+}
+
+output "route53_zone_id" {
+  description = "Route53 hosted zone ID"
+  value       = var.domain_name != "" ? aws_route53_zone.main[0].zone_id : "Not configured"
+}
+
+output "route53_name_servers" {
+  description = "Route53 name servers for the domain"
+  value       = var.domain_name != "" ? aws_route53_zone.main[0].name_servers : []
 }
