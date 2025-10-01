@@ -32,6 +32,12 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Simple health check endpoint before middleware
+@app.get("/healthz")
+async def health_check_simple():
+    """Simple health check endpoint for load balancer"""
+    return {"status": "ok"}
+
 # Middleware
 app.add_middleware(
     CORSMiddleware,
@@ -59,11 +65,6 @@ app.include_router(api_router, prefix="/api/v1")
 async def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "service": "multitenant-ai"}
-
-@app.get("/healthz")
-async def health_check_simple():
-    """Simple health check endpoint for load balancer"""
-    return {"status": "ok"}
 
 @app.get("/")
 async def root():
